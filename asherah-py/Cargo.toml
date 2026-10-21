@@ -1,6 +1,6 @@
 [package]
 name = "asherah-py"
-version = "1.0.0"
+version = "0.5.56"
 edition = "2021"
 license = "Apache-2.0"
 description = "Python bindings for the Asherah Rust library"

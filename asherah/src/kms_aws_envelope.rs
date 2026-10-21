@@ -306,7 +306,7 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
             let reg_kek = match map.get(c.region.as_str()) {
                 Some(k) => *k,
                 None => {
-                    log::debug!(
+                    log::warn!(
                         "AwsKmsEnvelope decrypt_key: no KEK for region={}, skipping",
                         c.region
                     );
@@ -323,7 +323,7 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
             let out = match out {
                 Ok(v) => v,
                 Err(e) => {
-                    log::debug!(
+                    log::warn!(
                         "AwsKmsEnvelope decrypt_key: KMS Decrypt failed for region={}: {e:#}",
                         c.region
                     );
@@ -341,7 +341,7 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
             let dk: zeroize::Zeroizing<Vec<u8>> = match out.plaintext() {
                 Some(p) => zeroize::Zeroizing::new(p.as_ref().to_vec()),
                 None => {
-                    log::debug!(
+                    log::warn!(
                         "AwsKmsEnvelope decrypt_key: KMS returned no plaintext for region={}",
                         c.region
                     );
@@ -358,7 +358,7 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
                     // was rotated out of band. Don't leak the AEAD error
                     // detail (which can include cipher state info) to the
                     // aggregated user-facing string.
-                    log::debug!(
+                    log::warn!(
                         "AwsKmsEnvelope decrypt_key: AEAD decrypt failed for region={}: {e:#}",
                         c.region
                     );

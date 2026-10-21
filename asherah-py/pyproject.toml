@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "asherah"
-version = "0.1.0"
+version = "0.5.56"
 description = "Asherah application-layer encryption for Python with automatic key rotation, powered by the native Rust implementation."
 readme = "README.md"
 requires-python = ">=3.8"
