@@ -313,6 +313,7 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
                     continue;
                 }
             };
+            let started = std::time::Instant::now();
             let out = c
                 .client
                 .decrypt()
@@ -323,9 +324,16 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
             let out = match out {
                 Ok(v) => v,
                 Err(e) => {
+                    // DEBUG: SdkError's Display is only the category ("dispatch
+                    // failure", "service error"); DisplayErrorContext walks the
+                    // full source chain.
                     log::warn!(
-                        "AwsKmsEnvelope decrypt_key: KMS Decrypt failed for region={}: {e:#}",
-                        c.region
+                        "AwsKmsEnvelope decrypt_key: KMS Decrypt failed for region={} key_arn={} envelope_arn={} elapsed_ms={}: {}",
+                        c.region,
+                        c.key_arn,
+                        reg_kek.arn,
+                        started.elapsed().as_millis(),
+                        aws_sdk_kms::error::DisplayErrorContext(&e)
                     );
                     failed_regions.push(c.region.clone());
                     continue;
@@ -359,8 +367,11 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
                     // detail (which can include cipher state info) to the
                     // aggregated user-facing string.
                     log::warn!(
-                        "AwsKmsEnvelope decrypt_key: AEAD decrypt failed for region={}: {e:#}",
-                        c.region
+                        "AwsKmsEnvelope decrypt_key: AEAD decrypt failed for region={} key_arn={} envelope_arn={} kms_returned_key_id={:?}: {e:#}",
+                        c.region,
+                        c.key_arn,
+                        reg_kek.arn,
+                        out.key_id()
                     );
                     failed_regions.push(c.region.clone());
                     // `dk` Zeroizing wrapper drops at end of loop

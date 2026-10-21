@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "asherah-py"
-version = "1.0.0"
+version = "0.5.56"
 dependencies = [
  "anyhow",
  "asherah",
