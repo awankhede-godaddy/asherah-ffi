@@ -313,6 +313,35 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
                     continue;
                 }
             };
+            // DEBUG: resolve the KMS host ourselves to log which IPs we are
+            // about to hit and how long DNS took (the SDK's 3.1s connect
+            // timeout includes DNS, and its errors report `connection: Unknown`).
+            let kms_host = format!("kms.{}.amazonaws.com:443", c.region);
+            let dns_started = std::time::Instant::now();
+            let resolved: Vec<std::net::SocketAddr> = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tokio::net::lookup_host(kms_host.as_str()),
+            )
+            .await
+            {
+                Ok(Ok(addrs)) => addrs.collect(),
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "AwsKmsEnvelope decrypt_key: DNS lookup for {kms_host} failed after {}ms: {e}",
+                        dns_started.elapsed().as_millis()
+                    );
+                    Vec::new()
+                }
+                Err(_) => {
+                    log::warn!("AwsKmsEnvelope decrypt_key: DNS lookup for {kms_host} timed out after 10000ms");
+                    Vec::new()
+                }
+            };
+            log::warn!(
+                "AwsKmsEnvelope decrypt_key: DNS {kms_host} -> {:?} dns_ms={}",
+                resolved.iter().map(|a| a.ip()).collect::<Vec<_>>(),
+                dns_started.elapsed().as_millis()
+            );
             let started = std::time::Instant::now();
             let out = c
                 .client
@@ -335,6 +364,30 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
                         started.elapsed().as_millis(),
                         aws_sdk_kms::error::DisplayErrorContext(&e)
                     );
+                    // DEBUG: right after the failure, probe each resolved IP
+                    // concurrently with the same 3.1s budget the SDK uses.
+                    let mut probes = tokio::task::JoinSet::new();
+                    for addr in resolved.iter().copied() {
+                        probes.spawn(async move {
+                            let t = std::time::Instant::now();
+                            let res = tokio::time::timeout(
+                                std::time::Duration::from_millis(3100),
+                                tokio::net::TcpStream::connect(addr),
+                            )
+                            .await;
+                            let outcome = match res {
+                                Ok(Ok(_)) => "connected".to_string(),
+                                Ok(Err(err)) => format!("error: {err}"),
+                                Err(_) => "timeout".to_string(),
+                            };
+                            (addr, outcome, t.elapsed().as_millis())
+                        });
+                    }
+                    while let Some(Ok((addr, outcome, ms))) = probes.join_next().await {
+                        log::warn!(
+                            "AwsKmsEnvelope decrypt_key: TCP probe {addr} -> {outcome} in {ms}ms"
+                        );
+                    }
                     failed_regions.push(c.region.clone());
                     continue;
                 }
