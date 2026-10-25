@@ -85,6 +85,9 @@ impl<A: AEAD + Send + Sync + 'static> AwsKms<A> {
             if let Ok(url) = std::env::var("AWS_ENDPOINT_URL") {
                 b = b.endpoint_url(url);
             }
+            if let Some(http) = crate::aws_sdk_load::kms_http_client(&shared_config) {
+                b = b.http_client(http);
+            }
             b.build()
         };
         // The (None, None) arm — no per-instance runtime AND no current
@@ -136,6 +139,9 @@ impl<A: AEAD + Send + Sync + 'static> AwsKms<A> {
         let mut b = aws_sdk_kms::config::Builder::from(&shared_config);
         if let Ok(url) = std::env::var("AWS_ENDPOINT_URL") {
             b = b.endpoint_url(url);
+        }
+        if let Some(http) = crate::aws_sdk_load::kms_http_client(&shared_config) {
+            b = b.http_client(http);
         }
         let conf = b.build();
         let client = Client::from_conf(conf);

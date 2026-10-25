@@ -328,11 +328,12 @@ impl<A: AEAD + Send + Sync + 'static> AwsKmsEnvelope<A> {
                     // failure", "service error"); DisplayErrorContext walks the
                     // full source chain.
                     log::warn!(
-                        "AwsKmsEnvelope decrypt_key: KMS Decrypt failed for region={} key_arn={} envelope_arn={} elapsed_ms={}: {}",
+                        "AwsKmsEnvelope decrypt_key: KMS Decrypt failed for region={} key_arn={} envelope_arn={} elapsed_ms={} last_dns={}: {}",
                         c.region,
                         c.key_arn,
                         reg_kek.arn,
                         started.elapsed().as_millis(),
+                        crate::aws_sdk_load::last_kms_dns(&format!("kms.{}.amazonaws.com", c.region)),
                         aws_sdk_kms::error::DisplayErrorContext(&e)
                     );
                     failed_regions.push(c.region.clone());
@@ -406,6 +407,9 @@ async fn new_kms_client_async(
     if let Ok(url) = std::env::var("AWS_ENDPOINT_URL") {
         b = b.endpoint_url(url);
     }
+    if let Some(http) = crate::aws_sdk_load::kms_http_client(&shared_config) {
+        b = b.http_client(http);
+    }
     let conf = b.build();
     let client = Client::from_conf(conf.clone());
     let resolved_region = conf
@@ -436,6 +440,9 @@ fn new_kms_client(
         let mut b = aws_sdk_kms::config::Builder::from(&shared_config);
         if let Ok(url) = std::env::var("AWS_ENDPOINT_URL") {
             b = b.endpoint_url(url);
+        }
+        if let Some(http) = crate::aws_sdk_load::kms_http_client(&shared_config) {
+            b = b.http_client(http);
         }
         b.build()
     };
@@ -486,6 +493,9 @@ fn new_kms_client_with_rt(
         let mut b = aws_sdk_kms::config::Builder::from(&shared_config);
         if let Ok(url) = std::env::var("AWS_ENDPOINT_URL") {
             b = b.endpoint_url(url);
+        }
+        if let Some(http) = crate::aws_sdk_load::kms_http_client(&shared_config) {
+            b = b.http_client(http);
         }
         b.build()
     };
