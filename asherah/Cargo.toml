@@ -88,7 +88,7 @@ features = ["default-https-client", "rt-tokio"]
 
 [dependencies.tokio]
 version = "1"
-features = ["rt-multi-thread", "macros", "net"]
+features = ["rt-multi-thread", "macros", "net", "time", "sync"]
 
 [dependencies.mysql]
 version = "27"
