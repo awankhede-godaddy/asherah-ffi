@@ -5,6 +5,10 @@
 //	go run github.com/godaddy/asherah-ffi/asherah-go/cmd/install-native@latest
 //	go run github.com/godaddy/asherah-ffi/asherah-go/cmd/install-native@latest --version v0.6.24
 //	go run github.com/godaddy/asherah-ffi/asherah-go/cmd/install-native@latest --output /usr/local/lib
+//
+// On Linux it installs the musl build (libasherah-<arch>-musl.so) when the host uses musl libc,
+// as Alpine does, and the glibc build otherwise. Pass --libc to choose explicitly, for example
+// when building on glibc for an Alpine runtime image.
 package main
 
 import (
@@ -29,6 +33,7 @@ func main() {
 	version := flag.String("version", "", "Release version (e.g., v0.6.24). Defaults to latest.")
 	output := flag.String("output", "", "Output directory. Defaults to user cache dir.")
 	repo := flag.String("repo", defaultRepo, "GitHub repository (owner/name).")
+	libc := flag.String("libc", "auto", "Linux C library to install for: auto, gnu or musl. auto detects the host.")
 	flag.Parse()
 
 	if *version == "" {
@@ -40,7 +45,12 @@ func main() {
 		fmt.Printf("Latest release: %s\n", *version)
 	}
 
-	assetName, err := assetNameForPlatform(runtime.GOOS, runtime.GOARCH)
+	musl, err := resolveMusl(runtime.GOOS, *libc, hostUsesMusl)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	assetName, err := assetNameForPlatform(runtime.GOOS, runtime.GOARCH, musl)
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -79,7 +89,34 @@ func main() {
 	}
 }
 
-func assetNameForPlatform(goos, goarch string) (string, error) {
+// resolveMusl turns the --libc flag into whether to install the musl build. Only Linux has a
+// musl build, so --libc=musl is rejected elsewhere and auto is always glibc there.
+func resolveMusl(goos, libc string, detect func() bool) (bool, error) {
+	switch libc {
+	case "auto":
+		return goos == "linux" && detect(), nil
+	case "gnu":
+		return false, nil
+	case "musl":
+		if goos != "linux" {
+			return false, fmt.Errorf("--libc=musl is only supported on linux, not %s", goos)
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid --libc %q: want auto, gnu or musl", libc)
+	}
+}
+
+// muslLoaderGlob matches the musl dynamic loader, e.g. /lib/ld-musl-x86_64.so.1 or
+// /lib/ld-musl-aarch64.so.1. glibc systems never ship it, so its presence identifies musl.
+const muslLoaderGlob = "/lib/ld-musl-*.so.1"
+
+func hostUsesMusl() bool {
+	matches, err := filepath.Glob(muslLoaderGlob)
+	return err == nil && len(matches) > 0
+}
+
+func assetNameForPlatform(goos, goarch string, musl bool) (string, error) {
 	arch := ""
 	switch goarch {
 	case "amd64":
@@ -102,6 +139,12 @@ func assetNameForPlatform(goos, goarch string) (string, error) {
 		return "", fmt.Errorf("unsupported OS: %s", goos)
 	}
 
+	if musl {
+		if goos != "linux" {
+			return "", fmt.Errorf("musl builds are only published for linux, not %s", goos)
+		}
+		return fmt.Sprintf("libasherah-%s-musl.%s", arch, ext), nil
+	}
 	return fmt.Sprintf("libasherah-%s.%s", arch, ext), nil
 }
 

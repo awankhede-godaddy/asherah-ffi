@@ -127,12 +127,15 @@ that runs it — make sure it's the same Go binary you'll deploy with.
 
 ### Alpine/musl LoadError
 
-`install-native` selects `linux-musl-x64` / `linux-musl-arm64`
-automatically based on `runtime.GOOS` — but that detection assumes
-your test/build container matches your production target.
+On Linux, `install-native` installs `libasherah-<arch>-musl.so` when
+the host uses musl libc (it looks for `/lib/ld-musl-*.so.1`) and the
+glibc build otherwise. Loading the glibc build on Alpine fails with
+`Error loading shared library ld-linux-x86-64.so.2`.
 
-If you build on glibc and deploy to Alpine, run `install-native` from
-inside an Alpine container so the right binary is shipped:
+That detection assumes your build container matches your production
+target. If you build on glibc and deploy to Alpine, pass `--libc=musl`
+(or `--libc=gnu` for the reverse), or run `install-native` from inside
+an Alpine container:
 
 ```dockerfile
 FROM golang:1.22-alpine AS builder

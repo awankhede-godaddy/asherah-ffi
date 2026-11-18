@@ -26,6 +26,7 @@ Options:
 --version v0.6.24      # Pin to a specific release (default: latest)
 --output /custom/path  # Custom output directory
 --repo owner/repo      # Custom GitHub repository
+--libc auto|gnu|musl   # Linux C library (default: auto-detect; musl on Alpine)
 ```
 
 Add the library to your `.gitignore`:
