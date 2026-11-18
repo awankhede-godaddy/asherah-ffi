@@ -136,19 +136,21 @@ pub extern "C" fn asherah_last_error_message() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn asherah_factory_new_from_env() -> *mut AsherahFactory {
-    match std::panic::catch_unwind(|| match ael::builders::factory_from_env() {
-        // Always enable per-factory metrics so an installed metrics hook
-        // (asherah_set_metrics_hook) actually fires for encrypt/decrypt/
-        // store/load events. The cost is one Instant::now() per encrypt
-        // regardless of hook state; the global metrics gate (toggled by
-        // asherah_set_metrics_hook) decides whether the sink is invoked.
-        Ok(f) => Box::into_raw(Box::new(AsherahFactory {
-            inner: f.with_metrics(true),
-        })),
-        Err(e) => {
-            set_error_sanitized("factory_new_from_env", &e);
-            null_mut()
-        }
+    match with_stack(|| {
+        std::panic::catch_unwind(|| match ael::builders::factory_from_env() {
+            // Always enable per-factory metrics so an installed metrics hook
+            // (asherah_set_metrics_hook) actually fires for encrypt/decrypt/
+            // store/load events. The cost is one Instant::now() per encrypt
+            // regardless of hook state; the global metrics gate (toggled by
+            // asherah_set_metrics_hook) decides whether the sink is invoked.
+            Ok(f) => Box::into_raw(Box::new(AsherahFactory {
+                inner: f.with_metrics(true),
+            })),
+            Err(e) => {
+                set_error_sanitized("factory_new_from_env", &e);
+                null_mut()
+            }
+        })
     }) {
         Ok(result) => result,
         Err(_) => {
@@ -156,6 +158,28 @@ pub extern "C" fn asherah_factory_new_from_env() -> *mut AsherahFactory {
             null_mut()
         }
     }
+}
+
+// ── Stack headroom ───────────────────────────────────────────────────
+//
+// The FFI entry points below run on the caller's thread. Building a
+// factory (AWS SDK config, KMS and DynamoDB clients) and the first
+// encrypt/decrypt on a partition (KMS + metastore round trips under
+// `block_on`) need well over 128 KiB of stack, which is the default
+// thread stack size on musl (Alpine). Go callers using purego run these
+// calls on arbitrary runtime threads, so on musl they overflowed the
+// stack and crashed with SIGSEGV. glibc threads default to 8 MiB.
+//
+// `with_stack` runs the closure on a separately allocated stack when the
+// current thread has less than `STACK_RED_ZONE` left, and in place
+// otherwise, so threads with a large stack (glibc, a musl main thread)
+// pay only a stack-pointer check.
+const STACK_RED_ZONE: usize = 1024 * 1024;
+const STACK_GROW_SIZE: usize = 8 * 1024 * 1024;
+
+#[inline]
+fn with_stack<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, f)
 }
 
 fn factory_from_config_json(
@@ -193,19 +217,21 @@ pub unsafe extern "C" fn asherah_apply_config_json(config_json: *const c_char) -
 pub unsafe extern "C" fn asherah_factory_new_with_config(
     config_json: *const c_char,
 ) -> *mut AsherahFactory {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || match factory_from_config_json(config_json) {
-            // Always enable per-factory metrics — see comment in
-            // asherah_factory_new_from_env.
-            Ok((factory, _applied)) => Box::into_raw(Box::new(AsherahFactory {
-                inner: factory.with_metrics(true),
-            })),
-            Err(e) => {
-                set_error_sanitized("factory_new_with_config", &e);
-                null_mut()
-            }
-        },
-    )) {
+    match with_stack(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || match factory_from_config_json(config_json) {
+                // Always enable per-factory metrics — see comment in
+                // asherah_factory_new_from_env.
+                Ok((factory, _applied)) => Box::into_raw(Box::new(AsherahFactory {
+                    inner: factory.with_metrics(true),
+                })),
+                Err(e) => {
+                    set_error_sanitized("factory_new_with_config", &e);
+                    null_mut()
+                }
+            },
+        ))
+    }) {
         Ok(result) => result,
         Err(_) => {
             set_error("internal panic in asherah_factory_new_with_config");
@@ -218,14 +244,14 @@ pub unsafe extern "C" fn asherah_factory_new_with_config(
 /// `ptr` must be a factory pointer previously obtained from this module.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn asherah_factory_free(ptr: *mut AsherahFactory) {
-    drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || {
+    drop(with_stack(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if ptr.is_null() {
                 return;
             }
             drop(Box::from_raw(ptr));
-        },
-    )));
+        }))
+    }));
 }
 
 /// # Safety
@@ -245,25 +271,27 @@ pub unsafe extern "C" fn asherah_factory_get_session(
     factory: *mut AsherahFactory,
     partition_id: *const c_char,
 ) -> *mut SharedSession {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if factory.is_null() {
-            set_error("null factory");
-            return null_mut();
-        }
-        let f = &*factory;
-        let pid = match cstr_to_str(partition_id) {
-            Ok(s) => s,
-            Err(e) => {
-                set_error_sanitized("factory_get_session", &e);
+    match with_stack(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if factory.is_null() {
+                set_error("null factory");
                 return null_mut();
             }
-        };
-        let s = f.inner.get_session(pid);
-        let shared = SharedSession {
-            session: Arc::new(AsherahSession { inner: s }),
-        };
-        Box::into_raw(Box::new(shared))
-    })) {
+            let f = &*factory;
+            let pid = match cstr_to_str(partition_id) {
+                Ok(s) => s,
+                Err(e) => {
+                    set_error_sanitized("factory_get_session", &e);
+                    return null_mut();
+                }
+            };
+            let s = f.inner.get_session(pid);
+            let shared = SharedSession {
+                session: Arc::new(AsherahSession { inner: s }),
+            };
+            Box::into_raw(Box::new(shared))
+        }))
+    }) {
         Ok(result) => result,
         Err(_) => {
             set_error("internal panic in asherah_factory_get_session");
@@ -278,14 +306,14 @@ pub unsafe extern "C" fn asherah_factory_get_session(
 /// remains alive until those operations complete.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn asherah_session_free(ptr: *mut SharedSession) {
-    drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || {
+    drop(with_stack(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if ptr.is_null() {
                 return;
             }
             drop(Box::from_raw(ptr));
-        },
-    )));
+        }))
+    }));
 }
 
 fn take_vec_into_buffer(v: Vec<u8>, out: *mut AsherahBuffer) -> c_int {
@@ -339,36 +367,38 @@ pub unsafe extern "C" fn asherah_encrypt_to_json(
     len: usize,
     out: *mut AsherahBuffer,
 ) -> c_int {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if session.is_null() {
-            set_error("null session");
-            return -1;
-        }
-        if data.is_null() && len > 0 {
-            set_error("null data");
-            return -1;
-        }
-        if let Err(e) = asherah::limits::check_plaintext_len(len) {
-            set_error(e.to_string());
-            return -1;
-        }
-        let s = &(*session).session;
-        let bytes = if data.is_null() {
-            &[]
-        } else {
-            std::slice::from_raw_parts(data, len)
-        };
-        match s.inner.encrypt(bytes) {
-            Ok(drr) => {
-                let v = drr.to_json_fast().into_bytes();
-                take_vec_into_buffer(v, out)
+    match with_stack(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if session.is_null() {
+                set_error("null session");
+                return -1;
             }
-            Err(e) => {
-                set_error_sanitized("encrypt_to_json", &e);
-                -1
+            if data.is_null() && len > 0 {
+                set_error("null data");
+                return -1;
             }
-        }
-    })) {
+            if let Err(e) = asherah::limits::check_plaintext_len(len) {
+                set_error(e.to_string());
+                return -1;
+            }
+            let s = &(*session).session;
+            let bytes = if data.is_null() {
+                &[]
+            } else {
+                std::slice::from_raw_parts(data, len)
+            };
+            match s.inner.encrypt(bytes) {
+                Ok(drr) => {
+                    let v = drr.to_json_fast().into_bytes();
+                    take_vec_into_buffer(v, out)
+                }
+                Err(e) => {
+                    set_error_sanitized("encrypt_to_json", &e);
+                    -1
+                }
+            }
+        }))
+    }) {
         Ok(result) => result,
         Err(_) => {
             set_error("internal panic in asherah_encrypt_to_json");
@@ -386,43 +416,45 @@ pub unsafe extern "C" fn asherah_decrypt_from_json(
     len: usize,
     out: *mut AsherahBuffer,
 ) -> c_int {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if session.is_null() {
-            set_error("null session");
-            return -1;
-        }
-        if json.is_null() && len > 0 {
-            set_error("null json");
-            return -1;
-        }
-        if let Err(e) = asherah::limits::check_ciphertext_len(len) {
-            set_error(e.to_string());
-            return -1;
-        }
-        let s = &(*session).session;
-        let bytes = if json.is_null() {
-            &[]
-        } else {
-            std::slice::from_raw_parts(json, len)
-        };
-        match serde_json::from_slice::<ael::types::DataRowRecord>(bytes) {
-            Ok(drr) => match s.inner.decrypt(drr) {
-                Ok(pt) => take_vec_into_buffer(pt, out),
+    match with_stack(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if session.is_null() {
+                set_error("null session");
+                return -1;
+            }
+            if json.is_null() && len > 0 {
+                set_error("null json");
+                return -1;
+            }
+            if let Err(e) = asherah::limits::check_ciphertext_len(len) {
+                set_error(e.to_string());
+                return -1;
+            }
+            let s = &(*session).session;
+            let bytes = if json.is_null() {
+                &[]
+            } else {
+                std::slice::from_raw_parts(json, len)
+            };
+            match serde_json::from_slice::<ael::types::DataRowRecord>(bytes) {
+                Ok(drr) => match s.inner.decrypt(drr) {
+                    Ok(pt) => take_vec_into_buffer(pt, out),
+                    Err(e) => {
+                        set_error_sanitized("decrypt_from_json", &e);
+                        -1
+                    }
+                },
                 Err(e) => {
-                    set_error_sanitized("decrypt_from_json", &e);
+                    // serde_json's Display already includes the offending
+                    // input snippet ("at line N column M ..."); strip the
+                    // chain so the user-facing message stays minimal.
+                    set_error(format!("decrypt_from_json: invalid JSON: {e}"));
+                    log::warn!("decrypt_from_json: invalid JSON: {e:#}");
                     -1
                 }
-            },
-            Err(e) => {
-                // serde_json's Display already includes the offending
-                // input snippet ("at line N column M ..."); strip the
-                // chain so the user-facing message stays minimal.
-                set_error(format!("decrypt_from_json: invalid JSON: {e}"));
-                log::warn!("decrypt_from_json: invalid JSON: {e:#}");
-                -1
             }
-        }
-    })) {
+        }))
+    }) {
         Ok(result) => result,
         Err(_) => {
             set_error("internal panic in asherah_decrypt_from_json");

@@ -24,6 +24,7 @@ once_cell = "1"
 parking_lot = "0.12"
 log = "0.4"
 zeroize = { version = "1.8", features = ["alloc"] }
+stacker = "0.1"
 
 [lints]
 workspace = true
